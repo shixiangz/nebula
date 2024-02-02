@@ -25,17 +25,27 @@ folly::Future<Status> SingleShortestPath::execute(const HashSet& startVids,
     resultDs_[rowNum].colNames = pathNode_->colNames();
     futures.emplace_back(shortestPath(rowNum, 1));
   }
-  return folly::collect(futures).via(runner()).thenValue([this, result](auto&& resps) {
-    memory::MemoryCheckGuard guard;
-    for (auto& resp : resps) {
-      NG_RETURN_IF_ERROR(resp);
-    }
-    result->colNames = pathNode_->colNames();
-    for (auto& ds : resultDs_) {
-      result->append(std::move(ds));
-    }
-    return Status::OK();
-  });
+  return folly::collectAll(futures).via(runner()).thenValue(
+      [this, result](std::vector<folly::Try<Status>>&& resps) {
+        memory::MemoryCheckGuard guard;
+        for (auto& respVal : resps) {
+          if (respVal.hasException()) {
+            auto ex = respVal.exception().get_exception<std::bad_alloc>();
+            if (ex) {
+              throw std::bad_alloc();
+            } else {
+              throw std::runtime_error(respVal.exception().what().c_str());
+            }
+          }
+          auto resp = std::move(respVal).value();
+          NG_RETURN_IF_ERROR(resp);
+        }
+        result->colNames = pathNode_->colNames();
+        for (auto& ds : resultDs_) {
+          result->append(std::move(ds));
+        }
+        return Status::OK();
+      });
 }
 
 void SingleShortestPath::init(const HashSet& startVids, const HashSet& endVids, size_t rowSize) {
@@ -69,11 +79,20 @@ folly::Future<Status> SingleShortestPath::shortestPath(size_t rowNum, size_t ste
   futures.reserve(2);
   futures.emplace_back(getNeighbors(rowNum, stepNum, false));
   futures.emplace_back(getNeighbors(rowNum, stepNum, true));
-  return folly::collect(futures)
+  return folly::collectAll(futures)
       .via(runner())
-      .thenValue([this, rowNum, stepNum](auto&& resps) {
+      .thenValue([this, rowNum, stepNum](std::vector<folly::Try<Status>>&& resps) {
         memory::MemoryCheckGuard guard;
-        for (auto& resp : resps) {
+        for (auto& respVal : resps) {
+          if (respVal.hasException()) {
+            auto ex = respVal.exception().get_exception<std::bad_alloc>();
+            if (ex) {
+              throw std::bad_alloc();
+            } else {
+              throw std::runtime_error(respVal.exception().what().c_str());
+            }
+          }
+          auto resp = std::move(respVal).value();
           if (!resp.ok()) {
             return folly::makeFuture<Status>(std::move(resp));
           }
@@ -252,6 +271,9 @@ void SingleShortestPath::buildOddPath(size_t rowNum, const std::vector<Value>& m
         Row path = leftPath;
         auto& steps = path.values.back().mutableList().values;
         steps.insert(steps.end(), rightPath.values.begin(), rightPath.values.end() - 1);
+        if (hasSameEdge(steps)) {
+          continue;
+        }
         path.emplace_back(rightPath.values.back());
         resultDs_[rowNum].rows.emplace_back(std::move(path));
         if (singleShortest_) {
@@ -285,6 +307,9 @@ folly::Future<bool> SingleShortestPath::buildEvenPath(size_t rowNum,
           auto& steps = path.values.back().mutableList().values;
           steps.emplace_back(meetVertex);
           steps.insert(steps.end(), rightPath.values.begin(), rightPath.values.end() - 1);
+          if (hasSameEdge(steps)) {
+            continue;
+          }
           path.emplace_back(rightPath.values.back());
           resultDs_[rowNum].rows.emplace_back(std::move(path));
           if (singleShortest_) {

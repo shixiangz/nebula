@@ -16,11 +16,20 @@ PrunePropertiesVisitor::PrunePropertiesVisitor(PropertyTracker &propsUsed,
 }
 
 void PrunePropertiesVisitor::visit(PlanNode *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
 void PrunePropertiesVisitor::visit(Filter *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   visitCurrent(node);  // Filter will use properties in filter expression
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -34,7 +43,13 @@ void PrunePropertiesVisitor::visitCurrent(Filter *node) {
 }
 
 void PrunePropertiesVisitor::visit(Project *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   visitCurrent(node);  // Project won't use properties in column expression
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -107,7 +122,13 @@ void PrunePropertiesVisitor::visitCurrent(Project *node) {
 }
 
 void PrunePropertiesVisitor::visit(Aggregate *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   visitCurrent(node);
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -153,8 +174,14 @@ void PrunePropertiesVisitor::visitCurrent(Aggregate *node) {
 }
 
 void PrunePropertiesVisitor::visit(ScanEdges *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   rootNode_ = false;
   pruneCurrent(node);
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -208,8 +235,14 @@ void PrunePropertiesVisitor::pruneCurrent(ScanEdges *node) {
 }
 
 void PrunePropertiesVisitor::visit(Traverse *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   rootNode_ = false;
   visitCurrent(node);
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -358,7 +391,13 @@ void PrunePropertiesVisitor::pruneCurrent(Traverse *node) {
 
 // AppendVertices should be deleted when no properties it pulls are used by the parent node.
 void PrunePropertiesVisitor::visit(AppendVertices *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   visitCurrent(node);
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
@@ -478,19 +517,34 @@ void PrunePropertiesVisitor::pruneCurrent(AppendVertices *node) {
 }
 
 void PrunePropertiesVisitor::visit(HashJoin *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 
 void PrunePropertiesVisitor::visit(CrossJoin *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   status_ = pruneBinaryBranch(node->dependencies());
 }
 
 void PrunePropertiesVisitor::visit(Union *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   status_ = pruneBinaryBranch(node->dependencies());
 }
 
 void PrunePropertiesVisitor::visit(Unwind *node) {
+  if (!visitedPlanNode_.emplace(node).second) {
+    return;
+  }
   visitCurrent(node);
+  if (!status_.ok()) {
+    return;
+  }
   status_ = depsPruneProperties(node->dependencies());
 }
 

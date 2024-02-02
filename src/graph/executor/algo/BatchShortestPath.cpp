@@ -27,18 +27,28 @@ folly::Future<Status> BatchShortestPath::execute(const HashSet& startVids,
     resultDs_[rowNum].colNames = pathNode_->colNames();
     futures.emplace_back(shortestPath(rowNum, 1));
   }
-  return folly::collect(futures).via(runner()).thenValue([this, result](auto&& resps) {
-    // MemoryTrackerVerified
-    memory::MemoryCheckGuard guard;
-    for (auto& resp : resps) {
-      NG_RETURN_IF_ERROR(resp);
-    }
-    result->colNames = pathNode_->colNames();
-    for (auto& ds : resultDs_) {
-      result->append(std::move(ds));
-    }
-    return Status::OK();
-  });
+  return folly::collectAll(futures).via(runner()).thenValue(
+      [this, result](std::vector<folly::Try<Status>>&& resps) {
+        // MemoryTrackerVerified
+        memory::MemoryCheckGuard guard;
+        for (auto& respVal : resps) {
+          if (respVal.hasException()) {
+            auto ex = respVal.exception().get_exception<std::bad_alloc>();
+            if (ex) {
+              throw std::bad_alloc();
+            } else {
+              throw std::runtime_error(respVal.exception().what().c_str());
+            }
+          }
+          auto resp = std::move(respVal).value();
+          NG_RETURN_IF_ERROR(resp);
+        }
+        result->colNames = pathNode_->colNames();
+        for (auto& ds : resultDs_) {
+          result->append(std::move(ds));
+        }
+        return Status::OK();
+      });
 }
 
 size_t BatchShortestPath::init(const HashSet& startVids, const HashSet& endVids) {
@@ -87,9 +97,7 @@ size_t BatchShortestPath::init(const HashSet& startVids, const HashSet& endVids)
       std::unordered_multimap<StartVid, std::pair<EndVid, bool>> terminationMap;
       for (auto& _startVid : _startVids) {
         for (auto& _endVid : _endVids) {
-          if (_startVid != _endVid) {
-            terminationMap.emplace(_startVid, std::make_pair(_endVid, true));
-          }
+          terminationMap.emplace(_startVid, std::make_pair(_endVid, true));
         }
       }
       terminationMaps_.emplace_back(std::move(terminationMap));
@@ -102,12 +110,21 @@ folly::Future<Status> BatchShortestPath::shortestPath(size_t rowNum, size_t step
   std::vector<folly::Future<Status>> futures;
   futures.emplace_back(getNeighbors(rowNum, stepNum, false));
   futures.emplace_back(getNeighbors(rowNum, stepNum, true));
-  return folly::collect(futures)
+  return folly::collectAll(futures)
       .via(runner())
-      .thenValue([this, rowNum, stepNum](auto&& resps) {
+      .thenValue([this, rowNum, stepNum](std::vector<folly::Try<Status>>&& resps) {
         // MemoryTrackerVerified
         memory::MemoryCheckGuard guard;
-        for (auto& resp : resps) {
+        for (auto& respVal : resps) {
+          if (respVal.hasException()) {
+            auto ex = respVal.exception().get_exception<std::bad_alloc>();
+            if (ex) {
+              throw std::bad_alloc();
+            } else {
+              throw std::runtime_error(respVal.exception().what().c_str());
+            }
+          }
+          auto resp = std::move(respVal).value();
           if (!resp.ok()) {
             return folly::makeFuture<Status>(std::move(resp));
           }
@@ -401,6 +418,9 @@ folly::Future<bool> BatchShortestPath::conjunctPath(size_t rowNum, bool oddStep)
       }
       auto& rightPaths = findCommonVid->second;
       for (const auto& srcPaths : leftPathMap.second) {
+        if (srcPaths.second.empty()) {
+          continue;
+        }
         auto range = terminationMap.equal_range(srcPaths.first);
         if (range.first == range.second) {
           continue;
@@ -440,6 +460,9 @@ void BatchShortestPath::doConjunctPath(const std::vector<CustomPath>& leftPaths,
   auto& resultDs = resultDs_[rowNum];
   if (rightPaths.empty()) {
     for (const auto& leftPath : leftPaths) {
+      if (hasSameEdge(leftPath.values)) {
+        continue;
+      }
       auto forwardPath = leftPath.values;
       auto src = forwardPath.front();
       forwardPath.erase(forwardPath.begin());
@@ -467,6 +490,9 @@ void BatchShortestPath::doConjunctPath(const std::vector<CustomPath>& leftPaths,
                          std::make_move_iterator(backwardPath.end()));
       auto dst = forwardPath.back();
       forwardPath.pop_back();
+      if (hasSameEdge(forwardPath)) {
+        continue;
+      }
       Row row;
       row.emplace_back(std::move(src));
       row.emplace_back(List(std::move(forwardPath)));
